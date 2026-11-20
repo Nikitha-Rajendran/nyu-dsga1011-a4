@@ -6,7 +6,8 @@ from transformers import AutoModelForSequenceClassification
 from torch.optim import AdamW
 from transformers import get_scheduler
 import torch
-from tqdm.auto import tqdm
+import re
+from tqdm import tqdm
 import evaluate
 import random
 import argparse
@@ -44,7 +45,25 @@ def custom_transform(example):
 
     # You should update example["text"] using your transformation
 
-    raise NotImplementedError
+    def add_typo(match):
+        word = match.group(0)
+
+        if random.random() >= 0.4:
+            return word
+
+        positions = [
+            i for i in range(1, len(word) - 2)
+            if word[i] != word[i + 1]
+        ]
+        if not positions:
+            return word
+
+        i = random.choice(positions)
+        letters = list(word)
+        letters[i], letters[i + 1] = letters[i + 1], letters[i]
+        return "".join(letters)
+
+    example["text"] = re.sub(r"\b[A-Za-z]{5,}\b", add_typo, example["text"])
 
     ##### YOUR CODE ENDS HERE ######
 

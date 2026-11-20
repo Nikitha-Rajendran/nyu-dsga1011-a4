@@ -6,7 +6,7 @@ from transformers import AutoModelForSequenceClassification
 from torch.optim import AdamW
 from transformers import get_scheduler
 import torch
-from tqdm.auto import tqdm
+from tqdm import tqdm
 import evaluate
 import random
 import argparse
@@ -45,7 +45,19 @@ def do_train(args, model, train_dataloader, save_dir="./out"):
     # You can use progress_bar.update(1) to see the progress during training
     # You can refer to the pytorch tutorial covered in class for reference
 
-    raise NotImplementedError
+    for epoch in range(num_epochs):
+        for batch in train_dataloader:
+            batch = {key: value.to(device) for key, value in batch.items()}
+
+            optimizer.zero_grad()
+
+            outputs = model(**batch)
+            loss = outputs.loss
+
+            loss.backward()
+            optimizer.step()
+            lr_scheduler.step()
+            progress_bar.update(1)
 
     ##### YOUR CODE ENDS HERE ######
 
@@ -93,7 +105,37 @@ def create_augmented_dataloader(args, dataset):
     # dataloader will be for the original training split augmented with 5k random transformed examples from the training set.
     # You may find it helpful to see how the dataloader was created at other place in this code.
 
-    raise NotImplementedError
+    selected_reviews = (
+        dataset["train"]
+        .shuffle(seed=42)
+        .select(range(5000))
+    )
+
+    transformed_reviews = selected_reviews.map(
+        custom_transform,
+        load_from_cache_file=False,
+    )
+
+    augmented_dataset = datasets.concatenate_datasets([
+        dataset["train"],
+        transformed_reviews,
+    ])
+
+    tokenized_augmented = augmented_dataset.map(
+        tokenize_function,
+        batched=True,
+        load_from_cache_file=False,
+    )
+
+    tokenized_augmented = tokenized_augmented.remove_columns(["text"])
+    tokenized_augmented = tokenized_augmented.rename_column("label", "labels")
+    tokenized_augmented.set_format("torch")
+
+    train_dataloader = DataLoader(
+        tokenized_augmented,
+        shuffle=True,
+        batch_size=args.batch_size,
+    )
 
     ##### YOUR CODE ENDS HERE ######
 

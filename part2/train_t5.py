@@ -47,6 +47,11 @@ def get_args():
     # Data hyperparameters
     parser.add_argument('--batch_size', type=int, default=16)
     parser.add_argument('--test_batch_size', type=int, default=16)
+    parser.add_argument(
+        "--run_test",
+        action="store_true",
+        help="Generate test predictions for the final selected model",
+    )
 
     args = parser.parse_args()
     return args
@@ -138,16 +143,111 @@ def eval_epoch(args, model, dev_loader, gt_sql_pth, model_sql_path, gt_record_pa
     should both provide good results. If you find that this component of evaluation takes too long with your compute,
     we found the cross-entropy loss (in the evaluation set) to be well (albeit imperfectly) correlated with F1 performance.
     '''
-    # TODO
     model.eval()
-    return 0, 0, 0, 0, 0
+    total_loss = 0.0
+    total_tokens = 0
+    generated_queries = []
+    criterion = nn.CrossEntropyLoss()
+
+    tokenizer = dev_loader.dataset.tokenizer
+
+    with torch.no_grad():
+        for encoder_input, encoder_mask, decoder_input, decoder_targets, initial_decoder_inputs in tqdm(dev_loader):
+            encoder_input = encoder_input.to(DEVICE)
+            encoder_mask = encoder_mask.to(DEVICE)
+            decoder_input = decoder_input.to(DEVICE)
+            decoder_targets = decoder_targets.to(DEVICE)
+
+            logits = model(
+                input_ids=encoder_input,
+                attention_mask=encoder_mask,
+                decoder_input_ids=decoder_input,
+            ).logits
+
+            non_pad = decoder_targets != PAD_IDX
+            loss = criterion(logits[non_pad], decoder_targets[non_pad])
+
+            num_tokens = non_pad.sum().item()
+            total_loss += loss.item() * num_tokens
+            total_tokens += num_tokens
+
+            generated_ids = model.generate(
+                input_ids=encoder_input,
+                attention_mask=encoder_mask,
+                decoder_input_ids=initial_decoder_inputs.to(DEVICE),
+                max_new_tokens=640,
+                num_beams=1,
+                do_sample=False,
+            )
+
+            decoded_queries = tokenizer.batch_decode(
+                generated_ids,
+                skip_special_tokens=True,
+            )
+
+            generated_queries.extend(
+                query.replace("SQL_LESS_THAN", "<").replace("\n", " ").strip()
+                for query in decoded_queries
+            )
+    os.makedirs(os.path.dirname(model_sql_path), exist_ok=True)
+    os.makedirs(os.path.dirname(model_record_path), exist_ok=True)
+
+    save_queries_and_records(
+        generated_queries,
+        model_sql_path,
+        model_record_path,
+    )
+
+    sql_em, record_em, record_f1, error_messages = compute_metrics(
+        gt_sql_pth,
+        model_sql_path,
+        gt_record_path,
+        model_record_path,
+    )
+
+    eval_loss = total_loss / total_tokens
+    error_rate = sum(bool(message) for message in error_messages) / len(error_messages)
+
+    return eval_loss, record_f1, record_em, sql_em, error_rate
         
 def test_inference(args, model, test_loader, model_sql_path, model_record_path):
     '''
     You must implement inference to compute your model's generated SQL queries and its associated 
     database records. Implementation should be very similar to eval_epoch.
     '''
-    pass
+    model.eval()
+    tokenizer = test_loader.dataset.tokenizer
+    generated_queries = []
+
+    with torch.no_grad():
+        for encoder_input, encoder_mask, initial_decoder_inputs in tqdm(test_loader):
+            generated_ids = model.generate(
+                input_ids=encoder_input.to(DEVICE),
+                attention_mask=encoder_mask.to(DEVICE),
+                decoder_input_ids=initial_decoder_inputs.to(DEVICE),
+                max_new_tokens=640,
+                num_beams=1,
+                do_sample=False,
+            )
+
+            decoded_queries = tokenizer.batch_decode(
+                generated_ids,
+                skip_special_tokens=True,
+            )
+
+            generated_queries.extend(
+                query.replace("SQL_LESS_THAN", "<").replace("\n", " ").strip()
+                for query in decoded_queries
+            )
+
+    os.makedirs(os.path.dirname(model_sql_path), exist_ok=True)
+    os.makedirs(os.path.dirname(model_record_path), exist_ok=True)
+
+    save_queries_and_records(
+        generated_queries,
+        model_sql_path,
+        model_record_path,
+    )
 
 def main():
     # Get key arguments
@@ -182,9 +282,10 @@ def main():
     print(f"Dev set results: {dev_error_rate*100:.2f}% of the generated outputs led to SQL errors")
 
     # Test set
-    model_sql_path = os.path.join(f'results/t5_{model_type}_{experiment_name}_test.sql')
-    model_record_path = os.path.join(f'records/t5_{model_type}_{experiment_name}_test.pkl')
-    test_inference(args, model, test_loader, model_sql_path, model_record_path)
+    if args.run_test:
+        model_sql_path = os.path.join(f'results/t5_{model_type}_{experiment_name}_test.sql')
+        model_record_path = os.path.join(f'records/t5_{model_type}_{experiment_name}_test.pkl')
+        test_inference(args, model, test_loader, model_sql_path, model_record_path)
 
 if __name__ == "__main__":
     main()

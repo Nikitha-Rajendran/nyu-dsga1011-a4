@@ -5,6 +5,7 @@ import re
 import pickle
 import random
 from tqdm import tqdm
+import time
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Any
@@ -124,6 +125,11 @@ def compute_records(processed_qs: List[str]):
 
 def compute_record(query_id, query):
     conn = sqlite3.connect(DB_PATH)
+    deadline = time.monotonic() + 120
+    conn.set_progress_handler(
+        lambda: int(time.monotonic() >= deadline),
+        10000,
+    )
     cursor = conn.cursor()
 
     try:
